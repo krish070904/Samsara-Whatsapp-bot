@@ -5,8 +5,12 @@ node_modules
 yarn-error.log
 
 # Environment varibales
+.env
+.env.local
+.env.*.local
 
-# !.env*.example
+# Keep example files
+!.env.example
 
 # Code coverage
 coverage
