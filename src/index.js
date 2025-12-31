@@ -2,22 +2,14 @@ import mongoose from 'mongoose';
 import app from './app.js';
 import config from './config/config.js';
 import logger from './config/logger.js';
-import { MongoMemoryServer } from 'mongodb-memory-server';
-
-/**
- * Starts the application.
- * In development mode we spin up an in‑memory MongoDB instance using
- * `mongodb-memory-server`. This removes the external dependency on a running
- * MongoDB server and lets the app start instantly.
- */
 const start = async () => {
   try {
+    // In production, MONGODB_URL is mandatory.
+    // In development, please set MONGODB_URL in .env to a local or cloud instance.
     let mongoUri = config.mongoose.url;
-    // If we are in development and no explicit URL is provided, use in‑memory DB
-    if (config.env === 'development' && (!process.env.MONGODB_URL || process.env.MONGODB_URL === '')) {
-      const mongod = await MongoMemoryServer.create();
-      mongoUri = mongod.getUri();
-      logger.info('Started in‑memory MongoDB');
+
+    if (!mongoUri) {
+      throw new Error('MONGODB_URL is missing in environment variables');
     }
 
     await mongoose.connect(mongoUri, config.mongoose.options);
