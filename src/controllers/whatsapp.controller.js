@@ -19,7 +19,8 @@ export const handleWebhook = async (req, res) => {
     return res.status(200).send();
   } catch (err) {
     logger.error('WhatsApp webhook error', err);
-    return res.status(500).send();
+    // Return 200 to prevent Meta from retrying the same message indefinitely
+    return res.status(200).send();
   }
 };
 export const getStats = async (req, res) => {
