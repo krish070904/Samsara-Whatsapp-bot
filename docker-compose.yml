@@ -16,7 +16,10 @@ services:
       - node-network
 
   mongodb:
-    image: mongo:4.2.1-bionic
+    image: mongo:7.0
+    platform: linux/amd64
+    environment:
+      - MONGO_INITDB_DATABASE=node-boilerplate
     ports:
       - '27017:27017'
     volumes:

@@ -1,17 +1,31 @@
 import UserSession from '../models/userSession.model.js';
-import aiService from './ai.service.js';
 import escalationService from './escalation.service.js';
+import logger from '../utils/logger.js';
 import axios from 'axios';
+
+// Import Modular Handlers
+import { handleWelcome, handleMainMenu } from './whatsapp/main.handler.js';
+import { handleGeneralMenu, handleWellnessSubmenus } from './whatsapp/wellness.handler.js';
+import { handleTechMenu, handleTechSubmenus } from './whatsapp/tech.handler.js';
+import { handleBillingMenu, handleBillingSubmenus } from './whatsapp/billing.handler.js';
+
 const PHONE_ID = process.env.WHATSAPP_PHONE_NUMBER_ID;
 const TOKEN = process.env.WHATSAPP_TOKEN;
 const API_URL = `https://graph.facebook.com/v15.0/${PHONE_ID}/messages`;
+
 const sendMessage = async (to, content) => {
   const body = typeof content === 'string' ? { type: 'text', text: { body: content } } : content;
-  await axios.post(
-    API_URL,
-    { messaging_product: 'whatsapp', to, ...body },
-    { headers: { Authorization: `Bearer ${TOKEN}` } }
-  );
+  try {
+    await axios.post(
+      API_URL,
+      { messaging_product: 'whatsapp', to, ...body },
+      { headers: { Authorization: `Bearer ${TOKEN}` } }
+    );
+  } catch (err) {
+    console.error('FULL META ERROR:', JSON.stringify(err.response?.data || err.message, null, 2));
+    logger.error('Meta API Error (sendMessage)', err.message);
+    throw err;
+  }
 };
 
 const sendTemplateMessage = async (to, templateName, languageCode = 'en_US') => {
@@ -30,7 +44,8 @@ const sendTemplateMessage = async (to, templateName, languageCode = 'en_US') => 
       { headers: { Authorization: `Bearer ${TOKEN}` } }
     );
   } catch (err) {
-    logger.error('Meta API Error:', err.response?.data || err.message);
+    console.error('FULL META ERROR (TEMPLATE):', JSON.stringify(err.response?.data || err.message, null, 2));
+    logger.error('Meta API Error (sendTemplate)', err.message);
     throw err;
   }
 };
@@ -42,6 +57,19 @@ const processIncoming = async (payload) => {
   if (!message) return;
 
   const from = message.from;
+
+  let session = await UserSession.findOne({ whatsappId: from });
+
+  if (!session) {
+    await sendTemplateMessage(from, 'samsara_welcome', 'en');
+    await UserSession.create({
+      whatsappId: from,
+      currentState: 'WELCOME',
+      history: [{ from, text: 'AUTO_WELCOME_SENT', reply: 'Template sent', timestamp: new Date() }]
+    });
+    return;
+  }
+
   let text = '';
 
   if (message.type === 'interactive') {
@@ -53,12 +81,6 @@ const processIncoming = async (payload) => {
   }
 
   if (!text) return;
-
-  const session = await UserSession.findOneAndUpdate(
-    { whatsappId: from },
-    { $setOnInsert: { currentState: 'WELCOME', history: [] } },
-    { upsert: true, new: true }
-  );
 
   const { reply, nextState, escalation } = await whatsappServiceLogic(session, text);
 
@@ -80,165 +102,73 @@ const getStats = async () => {
   return { activeSessions: count };
 };
 
+// --- CORE LOGIC ROUTER ---
 const whatsappServiceLogic = async (session, text) => {
   const lower = text.toLowerCase();
 
-  const mainMenuPayload = {
-    type: 'interactive',
-    interactive: {
-      type: 'list',
-      header: { type: 'text', text: 'Samsara Wellness 🌸' },
-      body: { text: 'Namaste! How can I help you today?' },
-      footer: { text: 'Select an option below' },
-      action: {
-        button: 'Menu Options',
-        sections: [
-          {
-            title: 'Samsara Services',
-            rows: [
-              { id: '1', title: 'General Wellness', description: 'Yoga, Mood, Period Tracker' },
-              { id: '2', title: 'Technical Support', description: 'App issues, Login help' },
-              { id: '3', title: 'Payment & Billing', description: 'Invoices, Subscription' },
-              { id: '4', title: 'Talk to Expert', description: 'Connect with a human agent' },
-            ],
-          },
-        ],
-      },
-    },
-  };
-
-  if (session.currentState === 'WELCOME' || lower === 'menu' || lower === 'get started') {
-    return {
-      reply: mainMenuPayload,
-      nextState: 'MAIN_MENU',
-      escalation: false,
-    };
+  // 1. Global Navigation (Always Active)
+  // If user says 'menu' or 'get started', always reset to Main Menu
+  if (lower === 'menu' || lower === 'get started' || session.currentState === 'WELCOME') {
+    return handleWelcome(); // Returns MAIN_MENU state
   }
 
+  // 2. Main Menu Selection
   if (session.currentState === 'MAIN_MENU') {
-    if (lower === '1' || lower.includes('general')) {
-      return {
-        reply: {
-          type: 'interactive',
-          interactive: {
-            type: 'list',
-            header: { type: 'text', text: 'General Wellness 🧘‍♀️' },
-            body: { text: 'Choose a wellness tracking category:' },
-            footer: { text: 'Samsara Wellness' },
-            action: {
-              button: 'Select Category',
-              sections: [
-                {
-                  title: 'Categories',
-                  rows: [
-                    { id: 'yoga', title: 'Yoga & Meditation' },
-                    { id: 'workshops', title: 'Online Workshops' },
-                    { id: 'mood', title: 'Mood Tracker' },
-                    { id: 'dosha', title: 'Dosha Tracker' },
-                    { id: 'health', title: 'Health Tracker' },
-                    { id: 'period', title: 'Period Tracker' },
-                    { id: 'pcos', title: 'PCOS / PCOD' },
-                    { id: 'thyroid', title: 'Thyroid Support' },
-                    { id: 'menopause', title: 'Menopause Care' },
-                    { id: 'diet', title: 'Diet & Nutrition' },
-                  ],
-                },
-              ],
-            },
-          },
-        },
-        nextState: 'GENERAL_MENU',
-        escalation: false,
-      };
-    }
-    if (lower === '2' || lower.includes('technical')) {
-      return {
-        reply: {
-          type: 'interactive',
-          interactive: {
-            type: 'list',
-            header: { type: 'text', text: 'Technical Support 🛠' },
-            body: { text: 'Select your issue:' },
-            footer: { text: 'Samsara Support' },
-            action: {
-              button: 'Select Issue',
-              sections: [
-                {
-                  title: 'Topics',
-                  rows: [
-                    { id: 'app_issue', title: 'App not working' },
-                    { id: 'device_issue', title: 'Device not showing' },
-                    { id: 'login_issue', title: 'Login/Password' },
-                    { id: 'firmware', title: 'Firmware Update' },
-                    { id: 'other_tech', title: 'Other Issue' },
-                  ],
-                },
-              ],
-            },
-          },
-        },
-        nextState: 'TECH_MENU',
-        escalation: false,
-      };
-    }
-    if (lower === '3' || lower.includes('payment')) {
-      return {
-        reply:
-          'Payment & Billing options:\n1️⃣ Update Payment Method\n2️⃣ View or Download Invoice\n3️⃣ Payment Failed / Double Charged\n4️⃣ Subscription / Cancellation\n5️⃣ Talk to Billing Team\n\nType "Menu" to return.',
-        nextState: 'BILLING_MENU',
-        escalation: false,
-      };
-    }
-    if (lower === '4' || lower.includes('live')) {
-      return {
-        reply: 'Connecting you to a live expert...',
-        nextState: 'ESCALATED',
-        escalation: true,
-      };
-    }
+    const result = handleMainMenu(lower);
+    if (result) return result;
   }
 
+  // 3. General Wellness Menu
   if (session.currentState === 'GENERAL_MENU') {
-    const selectionMap = {
-      yoga: 'Yoga & Meditation',
-      workshops: 'Online Workshops',
-      mood: 'Mood Tracker',
-      dosha: 'Dosha Tracker',
-      health: 'Health Tracker',
-      period: 'Period Tracker',
-      pcos: 'PCOS / PCOD',
-      thyroid: 'Thyroid Support',
-      menopause: 'Menopause Care',
-      diet: 'Diet & Nutrition',
-    };
-    const selection = selectionMap[lower] || lower;
-    return {
-      reply: `You are in the *${selection}* section 🌸.\n(This feature is under development). \n\nType "Menu" to return.`,
-      nextState: 'GENERAL_MENU',
-      escalation: false,
-    };
+    const result = handleGeneralMenu(lower);
+    if (result) return result;
   }
 
+  // 4. Wellness Submenus (Yoga, Workshop, Mood, Placeholders)
+  if (
+    session.currentState === 'YOGA_SUBMENU' ||
+    session.currentState === 'WORKSHOP_SUBMENU' ||
+    session.currentState === 'MOOD_TRACKER' ||
+    session.currentState.endsWith('_SUBMENU') // Catch all placeholders like DOSHA_SUBMENU
+  ) {
+    const result = handleWellnessSubmenus(session, lower);
+    if (result) return result;
+  }
+
+  // 5. Technical Support Menu
   if (session.currentState === 'TECH_MENU') {
-    const selectionMap = {
-      app_issue: 'App not working',
-      device_issue: 'Device not showing',
-      login_issue: 'Login/Password',
-      firmware: 'Firmware Update',
-      other_tech: 'Other Technical Issue',
-    };
-    const selection = selectionMap[lower] || lower;
-    return {
-      reply: `You selected *${selection}* 🛠.\nSupport logic coming soon.\n\nType "Menu" to return.`,
-      nextState: 'TECH_MENU',
-      escalation: false,
-    };
+    const result = handleTechMenu(lower);
+    if (result) return result;
   }
 
+  // 6. Tech Submenus
+  if (session.currentState.startsWith('TECH_')) {
+    const result = handleTechSubmenus(session, lower);
+    if (result) return result;
+  }
+
+  // 7. Billing Menu
+  if (session.currentState === 'BILLING_MENU') {
+    const result = handleBillingMenu(lower);
+    if (result) return result;
+  }
+
+  // 8. Billing Submenus
+  if (session.currentState.startsWith('BILLING_')) {
+    const result = handleBillingSubmenus(session, lower);
+    if (result) return result;
+  }
+
+  // 9. Default Fallback
   return {
-    reply: 'Sorry, I didn’t understand that. Type "Menu" to see options.',
+    reply: "I didn't quite understand that. 🤔\nType \"Menu\" to see available options.",
     nextState: session.currentState,
     escalation: false,
   };
 };
-export default { processIncoming, getStats, sendTemplateMessage };
+
+export default {
+  processIncoming,
+  getStats,
+  sendTemplateMessage,
+};
